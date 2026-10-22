@@ -713,6 +713,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._channels_minimum_y_spacing: List[float] = [9.0] * 8
     self._core_parked: Optional[bool] = None
     self._extended_conf: Optional[ExtendedConfiguration] = None
+    self._master_firmware_date: Optional[datetime.date] = None
     self._channel_traversal_height: float = 245.0
     self._iswap_traversal_height: float = 280.0
     # All iSWAP setup state lives in a single dataclass populated by
@@ -1091,6 +1092,17 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise ValueError(f"Could not parse year from firmware version string: '{fw_version}'")
     return datetime.date(int(year_match.group(1)), 1, 1)
 
+  def _takes_extended_pip_parameters(self) -> bool:
+    """Whether the master takes `ti`, `td`, TADM, second-section aspiration and `po`
+    (firmware from 2011-05-12 on, or unknown)."""
+    return self._master_firmware_date is None or self._master_firmware_date >= datetime.date(
+      2011, 5, 12
+    )
+
+  def _extended_pip(self, **parameters) -> dict:
+    """The parameters as given for a master that takes them, none for an older one."""
+    return parameters if self._takes_extended_pip_parameters() else {}
+
   async def setup(
     self,
     skip_instrument_initialization=False,
@@ -1114,6 +1126,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
+    try:
+      self._master_firmware_date = self._parse_firmware_version_datetime(
+        await self.request_firmware_version()
+      )
+    except Exception:
+      logger.warning("could not read the master firmware date; sending all PIP parameters")
+      self._master_firmware_date = None
     self._head96_information: Optional[Head96Information] = None
 
     initialized = await self.request_instrument_initialization_status()
@@ -5466,7 +5485,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       te=f"{z_position_at_end_of_a_command:04}",
       tm=[f"{tm:01}" for tm in tip_pattern],
       tt=f"{tip_type:02}",
-      ti=discarding_method,
+      **self._extended_pip(ti=discarding_method),
     )
 
   # -------------- 3.5.2 Tip handling commands using PIP --------------
@@ -5524,7 +5543,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       tp=f"{begin_tip_pick_up_process:04}",
       tz=f"{end_tip_pick_up_process:04}",
       th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      td=pickup_method.value,
+      **self._extended_pip(td=pickup_method.value),
     )
 
   @need_iswap_parked
@@ -5589,7 +5608,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       tz=end_tip_deposit_process,
       th=minimum_traverse_height_at_beginning_of_a_command,
       te=z_position_at_end_of_a_command,
-      ti=discarding_method.value,
+      **self._extended_pip(ti=discarding_method.value),
     )
 
   # TODO:(command:TW) Tip Pick-up for DC wash procedure
@@ -5850,7 +5869,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       lp=[f"{lp:04}" for lp in lld_search_height],
       ch=[f"{ch:03}" for ch in clot_detection_height],
       zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
+      **self._extended_pip(po=[f"{po:04}" for po in pull_out_distance_transport_air]),
       zu=[f"{zu:04}" for zu in second_section_height],
       zr=[f"{zr:05}" for zr in second_section_ratio],
       zx=[f"{zx:04}" for zx in minimum_height],
@@ -5874,14 +5893,18 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
       ms=[f"{ms:04}" for ms in mix_speed],
       mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,
-      gk=recording_mode,
-      lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
-      ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
+      **self._extended_pip(
+        gi=[f"{gi:03}" for gi in limit_curve_index],
+        gj=tadm_algorithm,
+        gk=recording_mode,
+        lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
+        ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
+      ),
       sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
-      se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
-      sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
+      **self._extended_pip(
+        se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
+        sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
+      ),
       io=[f"{io:04}" for io in cup_upper_edge],
     )
 
@@ -6080,7 +6103,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zx=[f"{zx:04}" for zx in minimum_height],
       lp=[f"{lp:04}" for lp in lld_search_height],
       zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
+      **self._extended_pip(po=[f"{po:04}" for po in pull_out_distance_transport_air]),
       ip=[f"{ip:04}" for ip in immersion_depth],
       it=[f"{it:01}" for it in immersion_depth_direction],
       fp=[f"{fp:04}" for fp in surface_following_distance],
@@ -6106,9 +6129,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
       ms=[f"{ms:04}" for ms in mix_speed],
       mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,  #
-      gk=recording_mode,  #
+      **self._extended_pip(
+        gi=[f"{gi:03}" for gi in limit_curve_index],
+        gj=tadm_algorithm,
+        gk=recording_mode,
+      ),
     )
 
   # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid

@@ -295,6 +295,78 @@ class TestPosesAgainstTheRail(unittest.IsolatedAsyncioTestCase):
     iswap._check_pose_reachable(-3.5, 121.0)
 
 
+class TestStopAngleCorrections(unittest.IsolatedAsyncioTestCase):
+  """Stops that stand off true: each reads back, and is sent, at its corrected angle."""
+
+  async def test_a_corrected_stop_reads_and_resolves_at_its_corrected_angle(self):
+    iswap, _ = await gripper()
+    c = iswap.configuration
+    assert c.elbow_drive_predefined_increments is not None
+    assert c.wrist_drive_predefined_increments is not None
+    c.elbow_stop_angle_corrections = {"front": 1.04}
+    c.wrist_stop_angle_corrections = {"right": -1.04}
+
+    front = c.elbow_drive_predefined_increments.front
+    right = c.wrist_drive_predefined_increments.right
+    self.assertAlmostEqual(c.elbow_drive_increments_to_angle(front), 1.04)
+    self.assertEqual(c.elbow_drive_angle_to_increments(1.04), front)
+    self.assertAlmostEqual(c.wrist_increments_to_deg(right), -136.04)
+    self.assertEqual(c.wrist_deg_to_increments(-136.04), right)
+    # The stops not named stay where they were.
+    self.assertAlmostEqual(
+      c.elbow_drive_increments_to_angle(c.elbow_drive_predefined_increments.left), -90.0
+    )
+    self.assertAlmostEqual(
+      c.wrist_increments_to_deg(c.wrist_drive_predefined_increments.straight), -45.0
+    )
+
+  async def test_link_1_front_and_gripper_left_moves_the_grip_centre_across_not_along(self):
+    """The elbow's front stop 1.04 deg anticlockwise of true, and the wrist's right stop as far the
+    other way, put the grip centre 2.5 mm right and still pointing straight left."""
+    iswap, _ = await gripper()
+    c = iswap.configuration
+    assert c.elbow_drive_predefined_increments is not None
+    assert c.wrist_drive_predefined_increments is not None
+    assert c.link_1_length is not None and iswap.gripper is not None
+
+    def grip_centre() -> Tuple[Coordinate, float]:
+      assert c.elbow_drive_predefined_increments is not None
+      assert c.wrist_drive_predefined_increments is not None
+      assert c.link_1_length is not None and iswap.gripper is not None
+      pose = iSWAP._forward_kinematics(
+        joints={
+          iSWAPAxis.X: 400.0,
+          iSWAPAxis.Y: 300.0,
+          iSWAPAxis.Z: 250.0,
+          iSWAPAxis.ELBOW: c.elbow_drive_increments_to_angle(
+            c.elbow_drive_predefined_increments.front
+          ),
+          iSWAPAxis.WRIST: c.wrist_increments_to_deg(c.wrist_drive_predefined_increments.right),
+          iSWAPAxis.GRIPPER: 90.0,
+        },
+        link_1_length=c.link_1_length,
+        tool_center_point_distance=iswap.gripper.tool_center_point.x,
+        wrist_straight_angle=c.wrist_increments_to_deg(
+          c.wrist_drive_predefined_increments.straight
+        ),
+        elbow_z_offset_above_finger=c.elbow_z_offset_above_finger,
+      )
+      return pose.gripper_center_location, pose.gripper_deck_orientation.z
+
+    nominal, nominal_heading = grip_centre()
+    c.elbow_stop_angle_corrections = {"front": 1.04}
+    c.wrist_stop_angle_corrections = {"right": -1.04}
+    corrected, corrected_heading = grip_centre()
+
+    self.assertAlmostEqual(nominal_heading % 360, 180.0)
+    self.assertAlmostEqual(corrected_heading % 360, 180.0)
+    self.assertAlmostEqual(
+      corrected.x - nominal.x, c.link_1_length * math.sin(math.radians(1.04)), places=3
+    )
+    self.assertAlmostEqual(corrected.x - nominal.x, 2.5, places=1)
+    self.assertAlmostEqual(corrected.y - nominal.y, 0.0, places=1)
+
+
 class TestToolCentrePoint(unittest.IsolatedAsyncioTestCase):
   """Where the kinematics put the grip centre, against the arm the model builds."""
 

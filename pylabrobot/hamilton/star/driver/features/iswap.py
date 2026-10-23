@@ -281,6 +281,13 @@ class iSWAPGripperPositions:
   plate_type_7: int
 
 
+ElbowStop = Literal["left", "front", "right"]
+"""One of the elbow drive's three stops, at nominally -90, 0 and +90 degrees."""
+
+WristStop = Literal["right", "straight", "left", "reverse"]
+"""One of the wrist drive's four stops, at nominally -135, -45, +45 and +135 degrees."""
+
+
 @dataclass
 class iSWAPConfiguration:
   """Device parameters for the installed iSWAP.
@@ -318,9 +325,16 @@ class iSWAPConfiguration:
 
   # -- elbow drive --
   elbow_drive_predefined_increments: Optional[iSWAPElbowPositions] = None
+  elbow_stop_angle_corrections: Dict[ElbowStop, float] = dataclasses.field(default_factory=dict)
+  """How far each elbow stop (`left`, `front`, `right`) really stands from its nominal -90, 0 and
+  +90 degrees, in degrees, counter-clockwise seen from above. Measured per arm, not read from it:
+  the stops are taken as exact unless this says otherwise. A stop not named is exact."""
 
   # -- wrist drive --
   wrist_drive_predefined_increments: Optional[iSWAPWristPositions] = None
+  wrist_stop_angle_corrections: Dict[WristStop, float] = dataclasses.field(default_factory=dict)
+  """How far each wrist stop (`right`, `straight`, `left`, `reverse`) really stands from its
+  nominal -135, -45, +45 and +135 degrees, in degrees. Measured per arm, as the elbow's are."""
   # -- gripper drive --
   gripper_drive_predefined_increments: Optional[iSWAPGripperPositions] = None
   """Each jaw width the gripper is calibrated against, in increments. Read by discovery; the
@@ -467,18 +481,29 @@ class iSWAPConfiguration:
     """
     return self.elbow_drive_diameter / 2 + self.elbow_drive_safety_radius
 
+  def _elbow_stop_angles(self) -> Tuple[float, float, float]:
+    """Where the elbow's `left`, `front` and `right` stops stand, in degrees: nominally -90, 0 and
+    +90, each moved by its `elbow_stop_angle_corrections` entry."""
+    corrections = self.elbow_stop_angle_corrections
+    return (
+      -90.0 + corrections.get("left", 0.0),
+      corrections.get("front", 0.0),
+      90.0 + corrections.get("right", 0.0),
+    )
+
   def elbow_drive_increments_to_angle(self, increments: int) -> float:
     """An elbow-drive angle in degrees, from increments, against the calibrated stops.
 
     Piecewise linear rather than one slope: `left` to `front` spans -90 to 0 degrees and `front`
     to `right` spans 0 to +90, each against the stops this device reports, so they read back as
-    exactly -90, 0 and +90 however far calibration has drifted.
+    exactly -90, 0 and +90 however far calibration has drifted - or as those plus their
+    `elbow_stop_angle_corrections`, for an arm whose stops stand off true.
 
     Args:
       increments: what the drive reports.
 
     Returns:
-      The angle in degrees, signed from the calibrated front stop.
+      The angle in degrees, signed from the nominal front.
 
     Raises:
       RuntimeError: If the stored stops were not read.
@@ -486,19 +511,22 @@ class iSWAPConfiguration:
     predefined_positions = self.elbow_drive_predefined_increments
     if predefined_positions is None:
       raise RuntimeError("the elbow drive's stops were not read; have you called `star.setup()`?")
+    left_angle, front_angle, right_angle = self._elbow_stop_angles()
     front = predefined_positions.front
     if increments < front:
-      return -90.0 * (front - increments) / (front - predefined_positions.left)
-    return 90.0 * (increments - front) / (predefined_positions.right - front)
+      span = (front - increments) / (front - predefined_positions.left)
+      return front_angle + span * (left_angle - front_angle)
+    span = (increments - front) / (predefined_positions.right - front)
+    return front_angle + span * (right_angle - front_angle)
 
   def elbow_drive_angle_to_increments(self, angle: float) -> int:
     """An elbow-drive angle in increments, from degrees, against the calibrated stops.
 
     The inverse of `elbow_drive_increments_to_angle`, piecewise on the same two segments, so
-    -90, 0 and +90 land exactly on the stops this device reports.
+    each stop's angle lands exactly on the increments this device reports for it.
 
     Args:
-      angle: degrees, signed from the calibrated front stop.
+      angle: degrees, signed from the nominal front.
 
     Returns:
       What to send the drive.
@@ -509,10 +537,13 @@ class iSWAPConfiguration:
     predefined_positions = self.elbow_drive_predefined_increments
     if predefined_positions is None:
       raise RuntimeError("the elbow drive's stops were not read; have you called `star.setup()`?")
+    left_angle, front_angle, right_angle = self._elbow_stop_angles()
     front = predefined_positions.front
-    if angle < 0:
-      return round(front - (angle / -90.0) * (front - predefined_positions.left))
-    return round(front + (angle / 90.0) * (predefined_positions.right - front))
+    if angle < front_angle:
+      span = (angle - front_angle) / (left_angle - front_angle)
+      return round(front - span * (front - predefined_positions.left))
+    span = (angle - front_angle) / (right_angle - front_angle)
+    return round(front + span * (predefined_positions.right - front))
 
   # The wrist's four stops, in the drive's own degrees. The drive is zeroed between `straight` and
   # `left`, which is what puts these at a quarter turn either side of +/-45 rather than at 0 and 90.
@@ -522,7 +553,8 @@ class iSWAPConfiguration:
     """The wrist's stops as increment/degree pairs, in increasing order.
 
     Returns:
-      What this device reports for each stop, against the angle that stop stands at.
+      What this device reports for each stop, against the angle that stop stands at: its nominal
+      one, moved by its `wrist_stop_angle_corrections` entry.
 
     Raises:
       RuntimeError: If the stored stops were not read.
@@ -530,11 +562,12 @@ class iSWAPConfiguration:
     predefined_positions = self.wrist_drive_predefined_increments
     if predefined_positions is None:
       raise RuntimeError("the wrist drive's stops were not read; have you called `star.setup()`?")
+    corrections = self.wrist_stop_angle_corrections
     return [
-      (predefined_positions.right, -135.0),
-      (predefined_positions.straight, -45.0),
-      (predefined_positions.left, 45.0),
-      (predefined_positions.reverse, 135.0),
+      (predefined_positions.right, -135.0 + corrections.get("right", 0.0)),
+      (predefined_positions.straight, -45.0 + corrections.get("straight", 0.0)),
+      (predefined_positions.left, 45.0 + corrections.get("left", 0.0)),
+      (predefined_positions.reverse, 135.0 + corrections.get("reverse", 0.0)),
     ]
 
   def wrist_increments_to_deg(self, increments: int) -> float:

@@ -27,6 +27,7 @@ def PLT_CAR_L4_HHS_ALT_A00(name: str) -> PlateCarrier:
       resource_size_x=127.0,
       resource_size_y=86.0,
       name_prefix=name,
+      pedestal_size_z=-2.8,  # a plate's skirt rests 2.8 mm below the pedestal top
     ),
     model="PLT_CAR_L4_HHS-ALT_A00",
   )

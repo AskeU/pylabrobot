@@ -5524,12 +5524,12 @@ class Pipettes:
         lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
         ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
       ),
-      sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
       **self._extended(
+        sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
         se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
         sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
       ),
-      io=[f"{io:04}" for io in cup_upper_edge],
+      **self._extended(io=[f"{io:04}" for io in cup_upper_edge]),
     )
 
   async def _aspirate_in_one_move(

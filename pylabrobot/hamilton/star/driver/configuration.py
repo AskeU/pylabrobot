@@ -142,7 +142,7 @@ class DeviceConfiguration:
 
   @property
   def takes_extended_pip_parameters(self) -> bool:
-    """Whether the master takes `ti`, `td`, TADM, second-section aspiration and `po`."""
+    """Whether the master takes `ti`, `td`, TADM, second-section aspiration, `po` and `io`."""
     return self.firmware_date is None or self.firmware_date >= EXTENDED_PIP_PARAMETERS_SINCE
 
 

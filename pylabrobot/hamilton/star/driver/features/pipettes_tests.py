@@ -4216,7 +4216,7 @@ class TestAMasterOlderThanTheExtendedPipParameters(unittest.IsolatedAsyncioTestC
     places = [Coordinate(300.0, 300.0, 150.0)]
     await self.pipettes._aspirate_in_one_move([0], places, [180.0], [120.0], [100.0])
     await self.pipettes._dispense_in_one_move([0], places, [180.0], [120.0], [100.0])
-    for parameter in ("gi", "gj", "gk", "lk", "ik", "se", "sz", "po"):
+    for parameter in ("gi", "gj", "gk", "lk", "ik", "sd", "se", "sz", "io", "po"):
       self.assertNotIn(parameter, self.sent("AS"))
     for parameter in ("gi", "gj", "gk", "po"):
       self.assertNotIn(parameter, self.sent("DS"))

@@ -1,7 +1,7 @@
 """OT-2 lifecycle, deck ownership, and physical pipette discovery."""
 
 import math
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pylabrobot.io.http import HTTP
 from pylabrobot.opentrons.api import HTTP_API_VERSION, OpentronsAPI
@@ -16,7 +16,7 @@ from pylabrobot.opentrons.ot2.pipette import (
   OT2_8ChannelPipette,
   OT2SingleChannelPipette,
 )
-from pylabrobot.opentrons.run import OpentronsRun
+from pylabrobot.opentrons.run import COMMAND_POLL_HEADROOM, OpentronsRun
 from pylabrobot.opentrons.types import (
   LabwareIdentity,
   ModuleInfo,
@@ -198,6 +198,23 @@ class OT2:
     async with self._operation_lock:
       self._require_run()
       await self._api.home()
+
+  async def wait_for_duration(self, seconds: float, message: Optional[str] = None) -> None:
+    """Let the robot wait ``seconds`` before its next command, in step with its run.
+
+    Args:
+      seconds: how long, in s.
+      message: what the wait is for, shown in the run's log. None for none.
+    """
+    if not math.isfinite(seconds) or seconds < 0:
+      raise ValueError("seconds must be finite and non-negative")
+    params: Dict[str, Any] = {"seconds": seconds}
+    if message is not None:
+      params["message"] = message
+    async with self._operation_lock:
+      await self._require_run().execute(
+        "waitForDuration", params, timeout=seconds + COMMAND_POLL_HEADROOM
+      )
 
   async def _load_tip_rack(self, tip_rack: TipRack, tip: Tip) -> None:
     slot = self.deck.get_slot(tip_rack)

@@ -227,8 +227,18 @@ class _OT2Pipette(ABC):
     speed: Optional[float] = None,
     minimum_z_height: Optional[float] = None,
     force_direct: bool = False,
+    retract: bool = True,
   ) -> None:
-    """Move to an absolute robot-frame coordinate, then retract to at least traversal height."""
+    """Move to an absolute robot-frame coordinate, then retract to at least traversal height.
+
+    Args:
+      location: where the nozzle the robot moves by goes, or the end of its tip.
+      speed: in mm/s. The robot's own when None.
+      minimum_z_height: the lowest the move travels at, in mm. The robot's own arc when None.
+      force_direct: True to go straight there, without the robot's arc.
+      retract: False to stay there, for commands in place (``aspirate_in_place``,
+        ``dispense_in_place``, ``blow_out``) to follow; ``move_to_safe_z`` retracts later.
+    """
     async with self.robot._operation_lock:
       self._require_active()
       await self._move_to(
@@ -237,7 +247,8 @@ class _OT2Pipette(ABC):
         minimum_z_height=minimum_z_height,
         force_direct=force_direct,
       )
-      await self._retract_to_traversal_height()
+      if retract:
+        await self._retract_to_traversal_height()
 
   def _tip_command_location(self, tip_spot: TipSpot, offset: Coordinate) -> Coordinate:
     """Convert a tip command's well-bottom offset to the reference nozzle's robot position."""
@@ -433,6 +444,96 @@ class _OT2Pipette(ABC):
         minimum_z_height=None,
         force_direct=True,
       )
+
+  async def move_to_safe_z(self) -> None:
+    """Raise the nozzle or mounted tip straight up to at least traversal height."""
+    async with self.robot._operation_lock:
+      self._require_active()
+      await self._retract_to_traversal_height()
+
+  async def request_position(self) -> Coordinate:
+    """Where the nozzle the robot moves by stands, or the end of its tip, in the robot frame."""
+    async with self.robot._operation_lock:
+      self._require_active()
+      return await self._run.get_position(self.pipette_id)
+
+  def _in_place_flow_rate(self, flow_rate: Optional[float], default: float) -> float:
+    """``flow_rate``, or ``default`` when None, checked."""
+    rate = default if flow_rate is None else float(flow_rate)
+    if not math.isfinite(rate) or rate <= 0:
+      raise ValueError("flow_rate must be finite and greater than zero")
+    return rate
+
+  def _in_place_volume(self, volume: float) -> float:
+    """Check a volume for a command in place. The robot refuses more than the tips hold."""
+    volume = float(volume)
+    if not math.isfinite(volume) or volume <= 0:
+      raise ValueError("volume must be finite and greater than zero")
+    return volume
+
+  async def aspirate_in_place(self, volume: float, flow_rate: Optional[float] = None) -> None:
+    """Aspirate ``volume`` per tip where the pipette stands, and stay there.
+
+    Names no container, so no tracker moves with it: position the pipette first
+    (``move_to(..., retract=False)``) and account for the liquid yourself. Drawing above the
+    liquid draws air, as an air gap does.
+
+    Args:
+      volume: per tip, in µL.
+      flow_rate: in µL/s. The pipette's default aspiration flow rate when None.
+
+    Raises:
+      OpentronsCommandError: If the plunger has not been readied after a blow-out (see
+        ``prepare_to_aspirate``).
+    """
+    async with self.robot._operation_lock:
+      self._require_active()
+      self._require_tips()
+      volume = self._in_place_volume(volume)
+      rate = self._in_place_flow_rate(flow_rate, self._spec.default_aspiration_flow_rate)
+      await self._run.aspirate_in_place(self.pipette_id, volume, rate)
+
+  async def dispense_in_place(self, volume: float, flow_rate: Optional[float] = None) -> None:
+    """Dispense ``volume`` per tip where the pipette stands, and stay there.
+
+    Names no container, so no tracker moves with it (see ``aspirate_in_place``).
+
+    Args:
+      volume: per tip, in µL.
+      flow_rate: in µL/s. The pipette's default dispense flow rate when None.
+    """
+    async with self.robot._operation_lock:
+      self._require_active()
+      self._require_tips()
+      volume = self._in_place_volume(volume)
+      rate = self._in_place_flow_rate(flow_rate, self._spec.default_dispense_flow_rate)
+      await self._run.dispense_in_place(self.pipette_id, volume, rate)
+
+  async def blow_out(self, flow_rate: Optional[float] = None) -> None:
+    """Blow out what the tips hold where the pipette stands, and stay there.
+
+    The plunger goes past its dispense bottom, and the robot then refuses to aspirate in place
+    until ``prepare_to_aspirate``. No tracker moves with it.
+
+    Args:
+      flow_rate: in µL/s. The pipette's default dispense flow rate when None.
+    """
+    async with self.robot._operation_lock:
+      self._require_active()
+      self._require_tips()
+      rate = self._in_place_flow_rate(flow_rate, self._spec.default_dispense_flow_rate)
+      await self._run.execute("blowOutInPlace", {"pipetteId": self.pipette_id, "flowRate": rate})
+
+  async def prepare_to_aspirate(self) -> None:
+    """Ready the plunger to aspirate, after a blow-out or a dispense that emptied the tips.
+
+    The plunger moves up to where an aspirate starts, which draws whatever is at the tips' ends:
+    do it with the tips above the liquid. The robot refuses it while the tips hold liquid.
+    """
+    async with self.robot._operation_lock:
+      self._require_active()
+      self._require_tips()
+      await self._run.execute("prepareToAspirate", {"pipetteId": self.pipette_id})
 
   async def _return_tips(
     self,
